@@ -1,0 +1,58 @@
+name: Compile firmware
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile-mouse:
+    name: Compile 3360_Mouse_pico (mbed)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ArduinoCore-mbed RP2040
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:mbed_rp2040@4.6.0
+
+      - name: Stage sketch directory
+        # arduino-cli expects sketch folder name == .ino basename
+        run: |
+          mkdir -p /tmp/3360_Mouse_pico
+          cp 3360_Mouse_pico.ino relmouse_16.h srom_dummy_blank.h /tmp/3360_Mouse_pico/
+          # Ensure proprietary SROM is absent so the dummy path is exercised
+          rm -f /tmp/3360_Mouse_pico/srom_3360_*.h
+
+      - name: Compile with dummy SROM
+        run: |
+          arduino-cli compile \
+            --fqbn arduino:mbed_rp2040:pico \
+            /tmp/3360_Mouse_pico
+
+  compile-spi-recorder:
+    name: Compile spi_recorder (arduino-pico)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install arduino-pico
+        run: |
+          arduino-cli core update-index
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Compile recorder
+        run: |
+          arduino-cli compile \
+            --fqbn rp2040:rp2040:rpipico \
+            bios/spi_recorder

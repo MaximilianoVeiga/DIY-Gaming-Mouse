@@ -59,7 +59,7 @@ using namespace arduino;
 using namespace std::chrono_literals;
 
 USBMouse16::USBMouse16(bool connect_blocking, uint16_t vendor_id, uint16_t product_id, uint16_t product_release):
-    USBHID(get_usb_phy(), 0, 0, vendor_id, product_id, product_release)
+    USBHID(connect_blocking, 0, 0, vendor_id, product_id, product_release)
 {
 }
 
@@ -158,8 +158,8 @@ const uint8_t *USBMouse16::configuration_desc(uint8_t index)
         0x01,                               // bNumInterfaces
         DEFAULT_CONFIGURATION,              // bConfigurationValue
         0x00,                               // iConfiguration
-        C_RESERVED | C_SELF_POWERED,        // bmAttributes
-        C_POWER(0),                         // bMaxPower
+        C_RESERVED,                         // bmAttributes (bus-powered)
+        C_POWER(100),                       // bMaxPower (100 mA)
 
         INTERFACE_DESCRIPTOR_LENGTH,        // bLength
         INTERFACE_DESCRIPTOR,               // bDescriptorType

@@ -1,0 +1,22 @@
+# Arduino CLI sketch profile for the main mouse firmware.
+# Requires ArduinoCore-mbed (NOT earlephilhower arduino-pico).
+#
+# Install + compile (repo root is not a valid sketch folder name, so stage first):
+#   arduino-cli core update-index
+#   arduino-cli core install arduino:mbed_rp2040@4.6.0
+#   mkdir -p /tmp/3360_Mouse_pico
+#   cp 3360_Mouse_pico.ino relmouse_16.h srom_dummy_blank.h /tmp/3360_Mouse_pico/
+#   # optional: also copy srom_3360_0x05.h into that folder if you have one
+#   arduino-cli compile --fqbn arduino:mbed_rp2040:pico /tmp/3360_Mouse_pico
+#
+# The SPI SROM recorder under bios/spi_recorder uses a different core:
+#   arduino-cli core install rp2040:rp2040
+#   arduino-cli compile --fqbn rp2040:rp2040:rpipico bios/spi_recorder
+
+profiles:
+  pico:
+    fqbn: arduino:mbed_rp2040:pico
+    platforms:
+      - platform: arduino:mbed_rp2040 (4.6.0)
+
+default_profile: pico

@@ -43,12 +43,58 @@ None of the companies that make gaming mouse sensors sell them to consumers, inc
 - PCB exposes extra unused pins from the rp2040 as test pads for hardware/firmware modding fun; attach your own sensors! or LEDs! whatever you want!
 - Full 1000hz tracking
 
+### Runtime controls
+
+- **DPI** (default 1200): hold LMB + RMB + DPI + M4 and scroll the wheel. Saved to flash ~2 seconds after the last change (mbed KVStore), so it survives reboot. Fallback default is `DPI_DEFAULT` in `3360_Mouse_pico.ino` (value is DPI/100).
+- **Lift-off distance / LOD** (default 2 mm): hold LMB + RMB + DPI + M5 and scroll the wheel. Range is 2–3 mm; also persisted after the same ~2 s debounce.
+- **Button remapping**: compile-time only. Edit the `BUTTON_MAP[]` table in `3360_Mouse_pico.ino`. By default M3 and the DPI button share middle-click (last press wins), M4 is back, M5 is forward.
+
+### Sensor modes
+
+- With a real `srom_3360_0x05.h`, the firmware uploads SROM and checks SROM ID + Observation (SROM running).
+- Without a real SROM, the build still succeeds using `srom_dummy_blank.h` and runs in **degraded** mode (tracking enabled, but spinouts/teleports are possible).
+- If SPI/product-ID checks fail repeatedly, the mouse enters **limp mode**: buttons and wheel keep working, motion is suppressed, and recovery is retried every few idle seconds.
+
+### Building the firmware
+
+Main mouse firmware uses **Arduino Mbed OS RP2040 Boards** (`arduino:mbed_rp2040`), not earlephilhower `arduino-pico`.
+
+```bash
+arduino-cli core update-index
+arduino-cli core install arduino:mbed_rp2040@4.6.0
+# Sketch folder name must match the .ino basename:
+mkdir -p /tmp/3360_Mouse_pico
+cp 3360_Mouse_pico.ino relmouse_16.h srom_dummy_blank.h /tmp/3360_Mouse_pico/
+# optional: cp srom_3360_0x05.h /tmp/3360_Mouse_pico/
+arduino-cli compile --fqbn arduino:mbed_rp2040:pico /tmp/3360_Mouse_pico
+```
+
+Or open `3360_Mouse_pico.ino` in Arduino IDE 2.x and select an **Arduino Mbed OS RP2040** Pico board. See [HARDWARE_VERIFY.md](HARDWARE_VERIFY.md) for post-flash checks.
+
+The SROM capture tool under `bios/spi_recorder` requires the **arduino-pico** core instead:
+
+```bash
+arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+arduino-cli core update-index
+arduino-cli core install rp2040:rp2040
+arduino-cli compile --fqbn rp2040:rp2040:rpipico bios/spi_recorder
+```
+
+CI compiles both sketches on every push (main firmware always uses the dummy SROM path; proprietary SROM headers stay gitignored).
+
+### Hardware verification checklist
+
+After flashing, confirm on a real mouse:
+
+1. Boot serial shows product id `66` / inverse `189` (0x42 / 0xBD). With a real SROM, also check a non-zero SROM id and Observation with bit 6 set.
+2. Change DPI with the DPI chord, wait ~2 seconds, unplug/replug: DPI should restore and print `settings: loaded ...`.
+3. Change LOD with the LOD chord the same way; lift height tracking stop should change between 2 mm and 3 mm.
+4. Buttons/wheel still work if the sensor is disconnected (limp mode); motion should stop without stuck clicks.
+5. Fast motion + rapid clicks should not drop presses; USB fail/recover messages may appear only under host stress.
+
 TODO:
 
-- Configurable DPI (currently hardcoded at 1200)
-- - To change it in the firmware code, edit the `spi_write(REG_CONFIG1, 11); // 1200 dpi` line, replacing 11 with your dpi divided by 100 minus 1, e.g. 7 for 800 dpi, 3 for 400, 15 for 1600, etc
-- rebinding, macros, etc
-- - can already be hardcoded atm if you're skilled at programming
+- Runtime remapping / macros (compile-time map already exists)
 - "fun" optional features like WMO-style diagonal jaggy removal or optional in-firmware acceleration, anti-smoothing (prediction), angle snapping, cinematic smoothing, etc
 
 ## Required skills
@@ -112,11 +158,11 @@ The final result will be somewhat rough and rugged, but it's a functional mouse 
 
 ### SROM preparation
 
-Note: The SROM is optional, but highly recommended because it contains sensor firmware bugfixes. If you can't get it, comment out the call to `srom_upload();` in `pmw3360_boot()`, and then rename the `.h` file inclusion to `#include "srom_dummy_blank.h"`, but be warned that your mouse might experience glitchy behavior like "spinout" or have generally poor tracking. For example, while writing this and testing the firmware without an SROM, I click-and-dragged a title bar on a window, and then the mouse cursor teleported 300~400 pixels to the right for no reason.
+Note: The SROM is optional, but highly recommended because it contains sensor firmware bugfixes. The firmware builds without an SROM: if `srom_3360_0x05.h` is missing, it falls back to `srom_dummy_blank.h` and skips SROM upload (with a serial warning). Without a real SROM, your mouse might experience glitchy behavior like "spinout" or have generally poor tracking. For example, while writing this and testing the firmware without an SROM, I click-and-dragged a title bar on a window, and then the mouse cursor teleported 300~400 pixels to the right for no reason.
 
 The SROM needs to be captured from an existing mouse because it's copyrighted. Give it the name `srom_3360_0x03.h`, `srom_3360_0x04.h`, or `srom_3360_0x05.h`, depending on what version it is. I poked around github and found other projects using the 3360 SROM, and this seems to be the way they decided to name their SROM header files, so I'm copying the filename from them.
 
-Once you have the SROM, edit the `#include "srom_3360_0x05.h"` line in `3360_Mouse_pico.ino` to point to the file for your SROM.
+Once you have the SROM, place `srom_3360_0x05.h` next to `3360_Mouse_pico.ino` (or adjust the `__has_include` path in that file for your version). The sketch will pick it up automatically.
 
 The below is instructions on how to capture the SROM from a commercial mouse.
 

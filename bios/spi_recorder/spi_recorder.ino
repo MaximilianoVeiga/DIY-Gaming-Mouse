@@ -12,6 +12,8 @@
 #define pin_dat1 17
 #define pin_dat2 18
 #define pin_clock 16
+// Abort a stuck capture if NCS never rises (bad wiring)
+#define CAPTURE_TIMEOUT_US 5000000UL
 
 uint8_t buff[buffsize];
 
@@ -40,6 +42,7 @@ void loop()
         uint32_t start = micros();
         uint32_t n = 0;
         uint8_t bit = 0;
+        bool timed_out = false;
         
         noInterrupts();
         do
@@ -58,14 +61,21 @@ void loop()
             }
             clockval = newclock;
             pins = gpio_get_all();
+            if ((micros() - start) > CAPTURE_TIMEOUT_US) {
+                timed_out = true;
+                break;
+            }
         } while (!(pins & (1 << pin_ncs)));
         interrupts();
         
         uint32_t end = micros();
+        uint32_t elapsed = end - start;
         
-        if (buff_i > 100)
+        if (timed_out) {
+            Serial.println("capture timed out waiting for NCS high; check wiring");
+        } else if (buff_i > 100 && elapsed > 0)
         {
-            Serial.printf("len: %d -- micros %d - khz %d - khz limit %d\n", buff_i, end-start, buff_i*8*1000/(end-start), n*1000/(end-start)/2);
+            Serial.printf("len: %d -- micros %d - khz %d - khz limit %d\n", buff_i, elapsed, buff_i*8*1000/elapsed, n*1000/elapsed/2);
             for (size_t i = 0; i < buff_i; i++)
                 Serial.printf("%02X, ", buff[i]);
             Serial.println("");
