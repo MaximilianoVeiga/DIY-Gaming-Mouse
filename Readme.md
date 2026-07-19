@@ -82,6 +82,24 @@ arduino-cli compile --fqbn rp2040:rp2040:rpipico bios/spi_recorder
 
 CI compiles both sketches on every push (main firmware always uses the dummy SROM path; proprietary SROM headers stay gitignored).
 
+### Lint / format
+
+CI also runs `clang-format` and `cppcheck` on the firmware sources, and compiles with `--warnings all`.
+
+Locally (requires `cppcheck` on `PATH`, and `clang-format` 22.x — e.g. `pip install clang-format==22.1.8`):
+
+```bash
+# Apply or check format (.ino treated as C++)
+python3 scripts/clang_format_firmware.py
+python3 scripts/clang_format_firmware.py --check
+
+cppcheck --language=c++ --enable=warning,style,performance,portability --error-exitcode=1 \
+  --suppress=missingIncludeSystem --suppress=unusedFunction \
+  3360_Mouse_pico.ino relmouse_16.h bios/spi_recorder/spi_recorder.ino
+```
+
+SROM blob headers (`srom_dummy_blank.h`, `srom_3360_*.h`) are excluded from formatting.
+
 ### Hardware verification checklist
 
 After flashing, confirm on a real mouse:

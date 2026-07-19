@@ -140,19 +140,19 @@ enum HidButton : uint8_t {
     HID_BACK = 3,
     HID_FORWARD = 4,
     HID_NONE = 0xFF,
-    // M3 and DPI share middle-click; last edge wins (legacy which_m3 behavior)
+    // M3 and DPI share middle-click; either pressed asserts middle
     HID_MIDDLE_SHARED = 0xFE
 };
 
 // Compile-time physical -> HID map. Edit here to rebind buttons.
 // Default matches stock firmware: M3/DPI share middle, M4=back, M5=forward.
 static const uint8_t BUTTON_MAP[PHYS_COUNT] = {
-    HID_LEFT,           // PHYS_M1
-    HID_RIGHT,          // PHYS_M2
-    HID_MIDDLE_SHARED,  // PHYS_M3
-    HID_MIDDLE_SHARED,  // PHYS_DPI
-    HID_BACK,           // PHYS_M4
-    HID_FORWARD         // PHYS_M5
+    HID_LEFT,          // PHYS_M1
+    HID_RIGHT,         // PHYS_M2
+    HID_MIDDLE_SHARED, // PHYS_M3
+    HID_MIDDLE_SHARED, // PHYS_DPI
+    HID_BACK,          // PHYS_M4
+    HID_FORWARD        // PHYS_M5
 };
 
 // Timing (us unless noted)
@@ -172,7 +172,7 @@ static const uint8_t BUTTON_MAP[PHYS_COUNT] = {
 #define SENSOR_RECOVERY_COOLDOWN_MS 5000
 
 // DPI / LOD
-#define DPI_DEFAULT 12   // hundreds: 1200
+#define DPI_DEFAULT 12 // hundreds: 1200
 #define DPI_MIN 1
 #define DPI_MAX 120
 #define LOD_DEFAULT 2
@@ -186,7 +186,7 @@ static const uint8_t BUTTON_MAP[PHYS_COUNT] = {
 #define SETTINGS_MAGIC 0x44594D53u /* 'DYMS' */
 #define SETTINGS_VERSION 1
 
-SPISettings spisettings(2000000, MSBFIRST, SPI_MODE3);
+static SPISettings spisettings(2000000, MSBFIRST, SPI_MODE3);
 
 struct MotionBurstData {
     uint8_t motion;
@@ -204,8 +204,7 @@ struct SettingsRecord {
     uint32_t crc;
 };
 
-static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len)
-{
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
     crc = ~crc;
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
@@ -215,78 +214,84 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len)
     return ~crc;
 }
 
-static uint32_t settings_payload_crc(const SettingsRecord &rec)
-{
-    uint8_t payload[4];
-    payload[0] = (uint8_t)(rec.magic);
-    payload[1] = (uint8_t)(rec.magic >> 8);
-    payload[2] = (uint8_t)(rec.magic >> 16);
-    payload[3] = (uint8_t)(rec.magic >> 24);
-    uint32_t crc = crc32_update(0, payload, 4);
-    uint8_t rest[4] = {
+// CRC over magic + version + dpi + lod (same field order / algorithm as before for KV compat)
+static uint32_t settings_payload_crc(const SettingsRecord &rec) {
+    const uint8_t magic_le[4] = {
+        (uint8_t)(rec.magic),
+        (uint8_t)(rec.magic >> 8),
+        (uint8_t)(rec.magic >> 16),
+        (uint8_t)(rec.magic >> 24),
+    };
+    const uint8_t fields[4] = {
         (uint8_t)(rec.version),
         (uint8_t)(rec.version >> 8),
         rec.dpi,
-        rec.lod
+        rec.lod,
     };
-    return crc32_update(crc, rest, 4);
+    uint32_t crc = crc32_update(0, magic_le, sizeof(magic_le));
+    return crc32_update(crc, fields, sizeof(fields));
 }
 
-// Forward decls
-void spi_write(byte addr, byte data);
-byte spi_read(byte addr);
-MotionBurstData spi_read_motion_burst(bool do_update_wheel);
-void pmw3360_boot();
-void pmw3360_config();
-void srom_upload();
-void update_wheel();
-void update_buttons();
-bool sensor_srom_observation_ok();
-void enter_limp_mode(const char *reason);
-void try_sensor_recovery();
-void settings_load();
-void settings_mark_dirty();
-void settings_flush_if_due();
-bool settings_save();
-int16_t sat_add_i16(int16_t a, int16_t b);
-int8_t sat_add_i8(int8_t a, int8_t b);
-uint8_t pack_hid_buttons(uint8_t phys);
+static void spi_begin();
+static void spi_end();
+static void spi_write(uint8_t addr, uint8_t data);
+static uint8_t spi_read(uint8_t addr);
+static MotionBurstData spi_read_motion_burst(bool do_update_wheel);
+static void pmw3360_boot();
+static void pmw3360_config();
+static void srom_upload();
+static void update_wheel();
+static void update_buttons();
+static void setup_buttons();
+static bool sensor_srom_observation_ok();
+static void enter_limp_mode(const char *reason);
+static void try_sensor_recovery();
+static void settings_load();
+static void settings_mark_dirty();
+static void settings_flush_if_due();
+static bool settings_save();
+static void check_config_inputs();
+static int16_t sat_add_i16(int16_t a, int16_t b);
+static int8_t sat_add_i8(int8_t a, int8_t b);
+static uint8_t pack_hid_buttons(uint8_t phys);
 
-bool mouse_inited = false;
-bool sensor_degraded = false; // no real SROM, but tracking enabled
-bool sensor_limp = false;
-uint8_t sensor_fail_streak = 0;
-uint32_t last_sensor_recovery_ms = 0;
+// --- Sensor state ---
+static bool mouse_inited = false;
+static bool sensor_degraded = false; // no real SROM, but tracking enabled
+static bool sensor_limp = false;
+static uint8_t sensor_fail_streak = 0;
+static uint32_t last_sensor_recovery_ms = 0;
 
-int dpi = DPI_DEFAULT;
-int lod = LOD_DEFAULT;
-bool settings_dirty = false;
-uint32_t settings_dirty_ms = 0;
+// --- Settings ---
+static uint8_t dpi = DPI_DEFAULT;
+static uint8_t lod = LOD_DEFAULT;
+static bool settings_dirty = false;
+static uint32_t settings_dirty_ms = 0;
 
-uint32_t pins_state = 0;
-uint8_t buttons = 0;
-uint8_t which_m3 = 0; // 0 = physical M3 owns middle; 1 = DPI owns middle
-uint8_t buttons_latch[PHYS_COUNT] = {0};
+// --- Buttons / wheel ---
+static uint32_t pins_state = 0;
+static uint8_t buttons = 0;
+static uint8_t buttons_latch[PHYS_COUNT] = {0};
 
-volatile uint32_t *gpio_oe_set = (uint32_t *)0xd0000024;
-volatile uint32_t *gpio_oe_clr = (uint32_t *)0xd0000028;
-volatile uint32_t *gpio_in = (uint32_t *)0xd0000004;
+static volatile uint32_t *const gpio_oe_set = (uint32_t *)0xd0000024;
+static volatile uint32_t *const gpio_oe_clr = (uint32_t *)0xd0000028;
+static volatile uint32_t *const gpio_in = (uint32_t *)0xd0000004;
 
-uint8_t wheel_state_a = 0;
-uint8_t wheel_state_b = 0;
-uint8_t wheel_state_output = 0;
-int8_t wheel_progress = 0;
+static uint8_t wheel_state_a = 0;
+static uint8_t wheel_state_b = 0;
+static uint8_t wheel_state_output = 0;
+static int8_t wheel_progress = 0;
 
-int16_t pending_x = 0;
-int16_t pending_y = 0;
-int8_t pending_wheel = 0;
-uint8_t pending_buttons = 0;
-uint32_t usb_fail_count = 0;
-uint32_t usb_recover_count = 0;
-bool usb_had_pending_fail = false;
+// --- USB pending report ---
+static int16_t pending_x = 0;
+static int16_t pending_y = 0;
+static int8_t pending_wheel = 0;
+static uint8_t pending_buttons = 0;
+static uint32_t usb_fail_count = 0;
+static uint32_t usb_recover_count = 0;
+static bool usb_had_pending_fail = false;
 
-void setup_buttons()
-{
+static void setup_buttons() {
     pinMode(BUTTONS_OFF, INPUT);
     pinMode(BUTTONS_ON, INPUT);
     pinMode(BUTTON_M1, INPUT_PULLUP);
@@ -303,8 +308,7 @@ void setup_buttons()
     digitalWrite(ENCODER_COM, LOW);
 }
 
-void setup()
-{
+void setup() {
     delay(BOOT_SERIAL_DELAY_MS);
 
     SPI.begin();
@@ -324,8 +328,7 @@ void setup()
     setup_buttons();
 }
 
-void update_buttons()
-{
+static void update_buttons() {
     // Tri-state matrix: OE toggling is much faster than pinMode()
     *gpio_oe_clr = 1u << BUTTONS_OFF;
     *gpio_oe_set = 1u << BUTTONS_ON;
@@ -344,13 +347,12 @@ void update_buttons()
     uint32_t pins_update = pins_on ^ pins_off;
     pins_state = (pins_state & (~pins_update)) | (pins_on & pins_update);
 
-    uint8_t next_buttons =
-          ((!!(pins_state & (1u << BUTTON_M1))) << PHYS_M1)
-        | ((!!(pins_state & (1u << BUTTON_M2))) << PHYS_M2)
-        | ((!!(pins_state & (1u << BUTTON_M3))) << PHYS_M3)
-        | ((!!(pins_state & (1u << BUTTON_DPI))) << PHYS_DPI)
-        | ((!!(pins_state & (1u << BUTTON_M4))) << PHYS_M4)
-        | ((!!(pins_state & (1u << BUTTON_M5))) << PHYS_M5);
+    uint8_t next_buttons = ((!!(pins_state & (1u << BUTTON_M1))) << PHYS_M1) |
+                           ((!!(pins_state & (1u << BUTTON_M2))) << PHYS_M2) |
+                           ((!!(pins_state & (1u << BUTTON_M3))) << PHYS_M3) |
+                           ((!!(pins_state & (1u << BUTTON_DPI))) << PHYS_DPI) |
+                           ((!!(pins_state & (1u << BUTTON_M4))) << PHYS_M4) |
+                           ((!!(pins_state & (1u << BUTTON_M5))) << PHYS_M5);
 
     uint8_t ok_mask = 0;
     for (uint8_t i = 0; i < PHYS_COUNT; i++)
@@ -366,16 +368,10 @@ void update_buttons()
             buttons_latch[i] -= 1;
     }
 
-    if ((next_buttons & PHYS_BIT(PHYS_M3)) != (buttons & PHYS_BIT(PHYS_M3)))
-        which_m3 = 0;
-    if ((next_buttons & PHYS_BIT(PHYS_DPI)) != (buttons & PHYS_BIT(PHYS_DPI)))
-        which_m3 = 1;
-
     buttons = next_buttons;
 }
 
-void update_wheel()
-{
+static void update_wheel() {
     uint8_t wheel_new_a = digitalRead(ENCODER_A);
     uint8_t wheel_new_b = digitalRead(ENCODER_B);
 
@@ -396,11 +392,9 @@ void update_wheel()
     }
 }
 
-uint8_t pack_hid_buttons(uint8_t phys)
-{
+static uint8_t pack_hid_buttons(uint8_t phys) {
     uint8_t hid = 0;
-    bool m3_shared = false;
-    bool dpi_shared = false;
+    bool middle_shared = false;
 
     for (uint8_t i = 0; i < PHYS_COUNT; i++) {
         if (!(phys & PHYS_BIT(i)))
@@ -410,31 +404,20 @@ uint8_t pack_hid_buttons(uint8_t phys)
         if (map == HID_NONE)
             continue;
         if (map == HID_MIDDLE_SHARED) {
-            if (i == PHYS_M3)
-                m3_shared = true;
-            else if (i == PHYS_DPI)
-                dpi_shared = true;
-            else
-                hid |= (1u << HID_MIDDLE);
+            middle_shared = true;
             continue;
         }
         if (map <= HID_FORWARD)
             hid |= (1u << map);
     }
 
-    // M3/DPI share middle-click; last edge wins when both are held
-    if (m3_shared && dpi_shared) {
-        if (which_m3 ? dpi_shared : m3_shared)
-            hid |= (1u << HID_MIDDLE);
-    } else if (m3_shared || dpi_shared) {
+    if (middle_shared)
         hid |= (1u << HID_MIDDLE);
-    }
 
     return hid;
 }
 
-static int dpi_step_up(int value)
-{
+static uint8_t dpi_step_up(uint8_t value) {
     if (value < 16)
         return 1;
     if (value < 32)
@@ -444,8 +427,7 @@ static int dpi_step_up(int value)
     return 8;
 }
 
-static int dpi_step_down(int value)
-{
+static uint8_t dpi_step_down(uint8_t value) {
     if (value <= 16)
         return 1;
     if (value <= 32)
@@ -455,43 +437,44 @@ static int dpi_step_down(int value)
     return 8;
 }
 
-void check_config_inputs()
-{
+static void check_config_inputs() {
     const bool dpi_chord = (buttons & CHORD_DPI) == CHORD_DPI;
     const bool lod_chord = (buttons & CHORD_LOD) == CHORD_LOD;
 
     if (dpi_chord && !lod_chord) {
-        int olddpi = dpi;
-        if (wheel_progress < 0)
-            dpi += dpi_step_up(dpi);
-        else if (wheel_progress > 0)
-            dpi -= dpi_step_down(dpi);
-
-        if (dpi > DPI_MAX)
-            dpi = DPI_MAX;
-        else if (dpi < DPI_MIN)
-            dpi = DPI_MIN;
+        uint8_t olddpi = dpi;
+        if (wheel_progress < 0) {
+            uint8_t step = dpi_step_up(dpi);
+            if (dpi <= DPI_MAX - step)
+                dpi = (uint8_t)(dpi + step);
+            else
+                dpi = DPI_MAX;
+        } else if (wheel_progress > 0) {
+            uint8_t step = dpi_step_down(dpi);
+            if (dpi >= DPI_MIN + step)
+                dpi = (uint8_t)(dpi - step);
+            else
+                dpi = DPI_MIN;
+        }
 
         if (olddpi != dpi) {
-            spi_write(REG_CONFIG1, (byte)(dpi - 1));
+            spi_write(REG_CONFIG1, (uint8_t)(dpi - 1));
             printf("new DPI: %d\n", dpi * 100);
             settings_mark_dirty();
         }
         wheel_progress = 0;
     } else if (lod_chord && !dpi_chord) {
-        int oldlod = lod;
-        if (wheel_progress < 0)
-            lod += 1;
-        else if (wheel_progress > 0)
-            lod -= 1;
-
-        if (lod > LOD_MAX)
-            lod = LOD_MAX;
-        else if (lod < LOD_MIN)
-            lod = LOD_MIN;
+        uint8_t oldlod = lod;
+        if (wheel_progress < 0) {
+            if (lod < LOD_MAX)
+                lod++;
+        } else if (wheel_progress > 0) {
+            if (lod > LOD_MIN)
+                lod--;
+        }
 
         if (oldlod != lod) {
-            spi_write(REG_LIFT_CONFIG, (byte)lod);
+            spi_write(REG_LIFT_CONFIG, lod);
             printf("new LOD: %d mm\n", lod);
             settings_mark_dirty();
         }
@@ -499,8 +482,7 @@ void check_config_inputs()
     }
 }
 
-int16_t sat_add_i16(int16_t a, int16_t b)
-{
+static int16_t sat_add_i16(int16_t a, int16_t b) {
     int32_t sum = (int32_t)a + (int32_t)b;
     if (sum > 32767)
         return 32767;
@@ -509,8 +491,7 @@ int16_t sat_add_i16(int16_t a, int16_t b)
     return (int16_t)sum;
 }
 
-int8_t sat_add_i8(int8_t a, int8_t b)
-{
+static int8_t sat_add_i8(int8_t a, int8_t b) {
     int16_t sum = (int16_t)a + (int16_t)b;
     if (sum > 127)
         return 127;
@@ -519,14 +500,12 @@ int8_t sat_add_i8(int8_t a, int8_t b)
     return (int8_t)sum;
 }
 
-void settings_mark_dirty()
-{
+static void settings_mark_dirty() {
     settings_dirty = true;
     settings_dirty_ms = millis();
 }
 
-void settings_load()
-{
+static void settings_load() {
     SettingsRecord rec;
     size_t actual = 0;
     int res = kv_get(SETTINGS_KEY, &rec, sizeof(rec), &actual);
@@ -538,8 +517,7 @@ void settings_load()
     }
 
     if (rec.magic != SETTINGS_MAGIC || rec.version != SETTINGS_VERSION ||
-        rec.crc != settings_payload_crc(rec) ||
-        rec.dpi < DPI_MIN || rec.dpi > DPI_MAX ||
+        rec.crc != settings_payload_crc(rec) || rec.dpi < DPI_MIN || rec.dpi > DPI_MAX ||
         rec.lod < LOD_MIN || rec.lod > LOD_MAX) {
         printf("settings: invalid record, using defaults\n");
         dpi = DPI_DEFAULT;
@@ -552,13 +530,12 @@ void settings_load()
     printf("settings: loaded DPI=%d LOD=%d\n", dpi * 100, lod);
 }
 
-bool settings_save()
-{
+static bool settings_save() {
     SettingsRecord rec;
     rec.magic = SETTINGS_MAGIC;
     rec.version = SETTINGS_VERSION;
-    rec.dpi = (uint8_t)dpi;
-    rec.lod = (uint8_t)lod;
+    rec.dpi = dpi;
+    rec.lod = lod;
     rec.crc = settings_payload_crc(rec);
 
     int res = kv_set(SETTINGS_KEY, &rec, sizeof(rec), 0);
@@ -570,8 +547,7 @@ bool settings_save()
     return true;
 }
 
-void settings_flush_if_due()
-{
+static void settings_flush_if_due() {
     if (!settings_dirty)
         return;
     if ((millis() - settings_dirty_ms) < SETTINGS_FLUSH_MS)
@@ -583,25 +559,22 @@ void settings_flush_if_due()
         settings_dirty_ms = millis(); // retry later
 }
 
-bool sensor_srom_observation_ok()
-{
+static bool sensor_srom_observation_ok() {
     spi_write(REG_OBSERVATION, 0x00);
     delay(10);
-    byte obs = spi_read(REG_OBSERVATION);
+    uint8_t obs = spi_read(REG_OBSERVATION);
     printf("observation: 0x%02X\n", obs);
     return (obs & OBS_SROM_RUNNING) != 0;
 }
 
-void enter_limp_mode(const char *reason)
-{
+static void enter_limp_mode(const char *reason) {
     if (!sensor_limp)
         printf("sensor limp: %s\n", reason);
     sensor_limp = true;
     mouse_inited = false;
 }
 
-void try_sensor_recovery()
-{
+static void try_sensor_recovery() {
     uint32_t now = millis();
     if ((now - last_sensor_recovery_ms) < SENSOR_RECOVERY_COOLDOWN_MS)
         return;
@@ -620,8 +593,7 @@ void try_sensor_recovery()
     }
 }
 
-void loop()
-{
+void loop() {
     update_wheel();
     delayMicroseconds(WHEEL_POLL_US);
     update_wheel();
@@ -631,7 +603,8 @@ void loop()
 
     MotionBurstData data = spi_read_motion_burst(true);
 
-    // Invalid SPI responses (all 0xFF) indicate a bus/sensor fault; zero SQUAL alone is normal when lifted
+    // Invalid SPI responses (all 0xFF) indicate a bus/sensor fault; zero SQUAL alone is
+    // normal when lifted
     bool burst_bus_fault = (data.motion == 0xFF && data.observation == 0xFF && data.squal == 0xFF);
     if (burst_bus_fault) {
         if (sensor_fail_streak < 255)
@@ -669,8 +642,8 @@ void loop()
         if (usb_had_pending_fail) {
             usb_recover_count++;
             usb_had_pending_fail = false;
-            printf("usb: recovered (fails=%lu recovers=%lu)\n",
-                   (unsigned long)usb_fail_count, (unsigned long)usb_recover_count);
+            printf("usb: recovered (fails=%lu recovers=%lu)\n", (unsigned long)usb_fail_count,
+                   (unsigned long)usb_recover_count);
         }
         pending_x = 0;
         pending_y = 0;
@@ -682,8 +655,7 @@ void loop()
     }
 }
 
-void pmw3360_boot()
-{
+static void pmw3360_boot() {
     mouse_inited = false;
     sensor_degraded = false;
 
@@ -696,8 +668,8 @@ void pmw3360_boot()
     spi_read(REG_DELTA_Y_L);
     spi_read(REG_DELTA_Y_H);
 
-    byte product_id = spi_read(REG_PRODUCT_ID);
-    byte inverse_product_id = spi_read(REG_INVERSE_PRODUCT_ID);
+    uint8_t product_id = spi_read(REG_PRODUCT_ID);
+    uint8_t inverse_product_id = spi_read(REG_INVERSE_PRODUCT_ID);
     printf("product id: %d (inverse: %d)\n", product_id, inverse_product_id);
     if (product_id != PMW3360_PRODUCT_ID || inverse_product_id != PMW3360_INVERSE_PRODUCT_ID) {
         printf("warning: unexpected PMW3360 product id; check SPI wiring\n");
@@ -716,24 +688,20 @@ void pmw3360_boot()
 #endif
 }
 
-void pmw3360_config()
-{
-    spi_write(REG_CONFIG1, (byte)(dpi - 1));
-    spi_write(REG_LIFT_CONFIG, (byte)lod);
+static void pmw3360_config() {
+    spi_write(REG_CONFIG1, (uint8_t)(dpi - 1));
+    spi_write(REG_LIFT_CONFIG, lod);
 }
 
-void spi_begin()
-{
+static void spi_begin() {
     SPI.beginTransaction(spisettings);
 }
 
-void spi_end()
-{
+static void spi_end() {
     SPI.endTransaction();
 }
 
-void spi_write(byte addr, byte data)
-{
+static void spi_write(uint8_t addr, uint8_t data) {
     spi_begin();
 
     digitalWrite(PIN_NCS, LOW);
@@ -750,8 +718,7 @@ void spi_write(byte addr, byte data)
     delayMicroseconds(T_SWW_SWR_US);
 }
 
-byte spi_read(byte addr)
-{
+static uint8_t spi_read(uint8_t addr) {
     spi_begin();
 
     digitalWrite(PIN_NCS, LOW);
@@ -761,7 +728,7 @@ byte spi_read(byte addr)
 
     delayMicroseconds(T_SRAD_US);
 
-    byte ret = SPI.transfer(0);
+    uint8_t ret = SPI.transfer(0);
 
     delayMicroseconds(T_NCS_SCLK_US);
     digitalWrite(PIN_NCS, HIGH);
@@ -773,8 +740,7 @@ byte spi_read(byte addr)
     return ret;
 }
 
-MotionBurstData spi_read_motion_burst(bool do_update_wheel)
-{
+static MotionBurstData spi_read_motion_burst(bool do_update_wheel) {
     MotionBurstData ret = {0};
 
     // ~260us; sample wheel midway
@@ -806,8 +772,7 @@ MotionBurstData spi_read_motion_burst(bool do_update_wheel)
     return ret;
 }
 
-void srom_upload()
-{
+static void srom_upload() {
     spi_write(REG_CONFIG2, 0x00);
     spi_write(REG_SROM_ENABLE, 0x1D);
     delay(10);
@@ -834,7 +799,7 @@ void srom_upload()
 
     delayMicroseconds(200);
 
-    byte id = spi_read(REG_SROM_ID);
+    uint8_t id = spi_read(REG_SROM_ID);
     bool id_ok = (id != 0 && id != 0xFF);
     bool obs_ok = sensor_srom_observation_ok();
     mouse_inited = id_ok && obs_ok;

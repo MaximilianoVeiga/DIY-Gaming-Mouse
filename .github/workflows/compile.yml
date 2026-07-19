@@ -5,6 +5,33 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Format + cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format and cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+          python3 -m pip install --user "clang-format==22.1.8"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: clang-format
+        run: python3 scripts/clang_format_firmware.py --check
+
+      - name: cppcheck
+        run: |
+          cppcheck --enable=warning,style,performance,portability \
+            --language=c++ \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --inline-suppr \
+            3360_Mouse_pico.ino relmouse_16.h bios/spi_recorder/spi_recorder.ino
+
   compile-mouse:
     name: Compile 3360_Mouse_pico (mbed)
     runs-on: ubuntu-latest
@@ -31,6 +58,7 @@ jobs:
       - name: Compile with dummy SROM
         run: |
           arduino-cli compile \
+            --warnings all \
             --fqbn arduino:mbed_rp2040:pico \
             /tmp/3360_Mouse_pico
 
@@ -54,5 +82,6 @@ jobs:
       - name: Compile recorder
         run: |
           arduino-cli compile \
+            --warnings all \
             --fqbn rp2040:rp2040:rpipico \
             bios/spi_recorder
